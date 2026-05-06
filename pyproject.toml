@@ -1,0 +1,11 @@
+[project]
+name = "clipbrain"
+version = "0.1.0"
+description = "A clipboard history manager for GNOME"
+requires-python = ">=3.12"
+dependencies = [
+    "pygobject>=3.48.0",
+]
+
+[project.scripts]
+clipbrain = "clipbrain.main:main"
