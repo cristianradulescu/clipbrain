@@ -26,6 +26,8 @@ Single GTK4 process + one GTK3 child subprocess:
 ## Critical behaviour notes
 
 ### GNOME/Wayland clipboard coalescing
+**The app runs under XWayland (`GDK_BACKEND=x11`, set in `main.py`).** On native Wayland, mutter only delivers clipboard updates to the focused client, so copies made while the window is hidden are missed. X11 clients get every selection change. Don't remove this without replacing it with another background capture path.
+
 `Gdk.Clipboard`'s `changed` signal is fired by mutter and is coalesced — if the same app copies several items rapidly, only the last fires the signal. **The 500 ms polling loop in `monitor.py` is intentional and necessary**; do not remove it.
 
 ### `_last_hash` dedup

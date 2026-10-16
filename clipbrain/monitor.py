@@ -10,8 +10,10 @@ clipboard that contains an image type as an image.
 
 On GNOME/Wayland the `changed` signal is coalesced by mutter — when the
 same app copies several items in quick succession only the last one fires
-the signal.  We complement the signal with a 500 ms polling timer that
-reads the clipboard and captures any hash change the signal missed.
+the signal — and it is only delivered while our window has keyboard focus.
+We complement the signal with a 500 ms polling timer that reads the
+clipboard and captures any hash change the signal missed; while the window
+is hidden the poll is the only thing capturing copies.
 
 Usage:
     monitor = ClipboardMonitor(on_text=..., on_image=...)
@@ -37,6 +39,10 @@ _IMAGE_MIMES = ("image/png", "image/jpeg", "image/bmp", "image/tiff", "image/web
 # the compositor.
 _POLL_MS = 500
 
+# A poll read that hasn't completed after this long is cancelled.  Without
+# it, a source app that never finishes writing would stall polling forever.
+_POLL_TIMEOUT_US = 3_000_000
+
 
 class ClipboardMonitor:
     def __init__(
@@ -61,8 +67,14 @@ class ClipboardMonitor:
         self._last_hash: str | None = None
         # Whether a poll-triggered async read is currently in flight.
         # We skip the next poll tick if one is already pending to avoid
-        # stacking up reads.
+        # stacking up reads.  Every poll completion path must call
+        # _poll_done(), otherwise polling stops for good.
         self._poll_reading: bool = False
+        self._poll_started_us: int = 0
+        self._poll_cancellable: Gio.Cancellable = Gio.Cancellable()
+        # Hash of the raw image bytes last seen by the poll, so an image
+        # sitting on the clipboard isn't decoded and re-encoded every tick.
+        self._poll_raw_image_hash: str | None = None
 
     def start(self) -> None:
         display = Gdk.Display.get_default()
@@ -92,43 +104,93 @@ class ClipboardMonitor:
 
     def _poll(self) -> bool:
         """GLib timer callback — reads clipboard and stores any change missed
-        by the coalesced `changed` signal.  Returns True to keep the timer."""
-        if self._clipboard is None or self._poll_reading:
+        by the `changed` signal.  Returns True to keep the timer.
+
+        On GNOME/Wayland only the focused client receives selection updates,
+        so while the window is hidden this poll is the only capture path.
+        It does not bump _generation (that would discard in-flight `changed`
+        reads); instead it drops its own result if a `changed` event arrived
+        while it was reading."""
+        if self._clipboard is None:
             return True
+        if self._poll_reading:
+            if GLib.get_monotonic_time() - self._poll_started_us < _POLL_TIMEOUT_US:
+                return True
+            self._poll_cancellable.cancel()  # stuck read; its callback is ignored
+            self._poll_done()
         formats = self._clipboard.get_formats()
         if formats is None:
             return True
         image_mime = self._find_image_mime(formats)
-        has_text = (formats.contain_mime_type("text/plain;charset=utf-8") or
-                    formats.contain_mime_type("text/plain"))
+        has_text = self._has_text(formats)
         if not image_mime and not has_text:
             return True
         self._poll_reading = True
-        self._generation += 1
+        self._poll_started_us = GLib.get_monotonic_time()
+        self._poll_cancellable = Gio.Cancellable()
+        cancellable = self._poll_cancellable
         generation = self._generation
         if image_mime:
-            self._clipboard.read_texture_async(
-                self._cancellable, self._make_texture_callback(generation))
+            self._clipboard.read_async(
+                [image_mime], GLib.PRIORITY_DEFAULT, cancellable,
+                self._make_poll_image_callback(generation, cancellable, has_text))
         else:
-            self._clipboard.read_text_async(
-                self._cancellable, self._make_poll_text_callback(generation))
+            self._poll_read_text(generation, cancellable)
         return True  # keep timer running
 
-    def _make_poll_text_callback(self, generation: int):
+    def _poll_done(self) -> None:
+        self._poll_reading = False
+
+    def _poll_read_text(self, generation: int, cancellable: Gio.Cancellable) -> None:
         def _on_text_ready(clipboard: Gdk.Clipboard, result: Gio.AsyncResult) -> None:
-            self._poll_reading = False
+            if cancellable is not self._poll_cancellable:
+                return  # timed out and superseded by a newer poll
+            self._poll_done()
             try:
                 text = clipboard.read_text_finish(result)
             except Exception:
                 return
-            if not text or not text.strip():
+            if generation != self._generation:
+                return  # a `changed` read owns this content now
+            self._deliver_text(text)
+        self._clipboard.read_text_async(cancellable, _on_text_ready)
+
+    def _make_poll_image_callback(self, generation: int, cancellable: Gio.Cancellable,
+                                  has_text: bool):
+        def _fallback_to_text() -> None:
+            # The format list may be stale (it only refreshes while focused),
+            # so the current content may be text even though an image was
+            # advertised last time.
+            if has_text:
+                self._poll_read_text(generation, cancellable)
+            else:
+                self._poll_done()
+
+        def _on_bytes(raw: bytes | None) -> None:
+            if cancellable is not self._poll_cancellable:
                 return
-            content_hash = hashlib.sha256(text.encode()).hexdigest()
-            if content_hash == self._last_hash:
+            if not raw:
+                _fallback_to_text()
                 return
-            self._last_hash = content_hash
-            self._on_text(text)
-        return _on_text_ready
+            self._poll_done()
+            if generation != self._generation:
+                return
+            raw_hash = hashlib.sha256(raw).hexdigest()
+            if raw_hash == self._poll_raw_image_hash:
+                return
+            self._poll_raw_image_hash = raw_hash
+            self._on_image_bytes_ready(raw, generation)
+
+        def _on_stream_ready(clipboard: Gdk.Clipboard, result: Gio.AsyncResult) -> None:
+            if cancellable is not self._poll_cancellable:
+                return
+            try:
+                stream, _out_mime = clipboard.read_finish(result)
+            except Exception:
+                _fallback_to_text()
+                return
+            _read_stream_fully(stream, _on_bytes)
+        return _on_stream_ready
 
     def _on_changed(self, clipboard: Gdk.Clipboard) -> None:
         # Cancel any in-flight async read so the Wayland compositor releases
@@ -136,6 +198,7 @@ class ClipboardMonitor:
         # subsequent `changed` signals until the read completes.
         self._cancellable.cancel()
         self._cancellable = Gio.Cancellable()
+        self._poll_cancellable.cancel()
 
         # Bump generation — stale callbacks discard their result.
         self._generation += 1
@@ -144,19 +207,27 @@ class ClipboardMonitor:
 
         formats: Gdk.ContentFormats = clipboard.get_formats()
         image_mime = self._find_image_mime(formats)
-        has_text = formats.contain_mime_type("text/plain;charset=utf-8") or \
-                   formats.contain_mime_type("text/plain")
 
         if image_mime is not None:
             clipboard.read_texture_async(
                 cancellable, self._make_texture_callback(generation))
-        elif formats.contain_mime_type("text/plain;charset=utf-8") or \
-             formats.contain_mime_type("text/plain"):
-            clipboard.read_text_async(
-                cancellable, self._make_text_callback(generation))
         else:
             clipboard.read_text_async(
                 cancellable, self._make_text_callback(generation))
+
+    @staticmethod
+    def _has_text(formats: Gdk.ContentFormats) -> bool:
+        return (formats.contain_mime_type("text/plain;charset=utf-8") or
+                formats.contain_mime_type("text/plain"))
+
+    def _deliver_text(self, text: str | None) -> None:
+        if not text or not text.strip():
+            return
+        content_hash = hashlib.sha256(text.encode()).hexdigest()
+        if content_hash == self._last_hash:
+            return
+        self._last_hash = content_hash
+        self._on_text(text)
 
     @staticmethod
     def _find_image_mime(formats: Gdk.ContentFormats) -> str | None:
@@ -177,12 +248,7 @@ class ClipboardMonitor:
                 text = clipboard.read_text_finish(result)
             except Exception:
                 return
-            if text and text.strip():
-                content_hash = hashlib.sha256(text.encode()).hexdigest()
-                if content_hash == self._last_hash:
-                    return
-                self._last_hash = content_hash
-                self._on_text(text)
+            self._deliver_text(text)
         return _on_text_ready
 
     def _make_texture_callback(self, generation: int):
