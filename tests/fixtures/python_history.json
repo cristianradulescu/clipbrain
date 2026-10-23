@@ -1,0 +1,39 @@
+[
+  {
+    "id": "a792a126-adc3-4ca6-b0a8-6a9762d3ddb7",
+    "kind": "text",
+    "timestamp": "2026-10-23T08:06:06.183730+00:00",
+    "text": "multi\nline\nentry"
+  },
+  {
+    "id": "438526bc-3fc0-4f50-96a5-e30f96678e04",
+    "kind": "text",
+    "timestamp": "2026-10-23T08:06:06.183679+00:00",
+    "text": "unicode: café ünïcödé 日本語 🦀"
+  },
+  {
+    "id": "56f8abe5-37ef-4804-8a78-693932c092c7",
+    "kind": "text",
+    "timestamp": "2026-10-23T08:06:06.183630+00:00",
+    "text": "tricky: \"quotes\" \\ back\tslash\nsecond line \u0001 ctrl"
+  },
+  {
+    "id": "8ed53e04-262f-4c6b-a095-439246836a5c",
+    "kind": "image",
+    "timestamp": "2026-10-23T08:06:06.183553+00:00",
+    "image_path": "/home/user/.local/share/clipbrain/images/8ed53e04-262f-4c6b-a095-439246836a5c.png",
+    "content_hash": "97a3a410c9bca540512251c37ce63982edccbed54c6f2e1d06ec717b9f753e29"
+  },
+  {
+    "id": "10bee1c1-4b52-4370-9fe1-72224a2111aa",
+    "kind": "text",
+    "timestamp": "2026-01-02T03:04:05+00:00",
+    "text": "oldest plain text"
+  },
+  {
+    "id": "0b5e1f7e-9a51-4c43-8d0e-6f1f3c0b2a11",
+    "kind": "image",
+    "timestamp": "2025-12-31T23:59:59.000001+00:00",
+    "image_path": "/home/user/.local/share/clipbrain/images/0b5e1f7e-9a51-4c43-8d0e-6f1f3c0b2a11.png"
+  }
+]
