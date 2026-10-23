@@ -146,6 +146,8 @@ mod ui {
         press(&win, gdk::Key::Return);
         wait_until("promote", || top_id() == second.id());
         wait_until("list reorder", || texts(&win)[0] == second.text());
+        wait_until("copied entry selected", || selected() == 0);
+        assert_eq!(win.selected_entry(), Some(second.clone()));
         let clipboard_text = Rc::new(std::cell::RefCell::new(None));
         glib::spawn_future_local(glib::clone!(
             #[strong]
@@ -172,16 +174,29 @@ mod ui {
             .unwrap();
         WidgetExt::activate_action(&win, "win.copy-entry", Some(&alpha.id().to_variant())).unwrap();
         wait_until("copy action", || top_id() == alpha.id());
+        wait_until("list settles", || texts(&win)[0] == "alpha");
+        wait_until("button-copied entry selected", || {
+            win.selected_entry().as_ref() == Some(&alpha)
+        });
+        assert_eq!(selected(), 0);
+
+        // A capture arriving while browsing keeps the selection on its entry.
+        win.selection().set_selected(1);
+        let browsing = win.selected_entry().unwrap();
+        store.lock().unwrap().add_text("new capture").unwrap();
+        win.reload();
+        wait_until("capture shown", || texts(&win)[0] == "new capture");
+        assert_eq!(win.selected_entry(), Some(browsing));
+        assert_eq!(selected(), 2);
 
         // Delete removes the selected entry from the list and storage.
-        wait_until("list settles", || texts(&win)[0] == "alpha");
-        win.selection().set_selected(2);
+        win.selection().set_selected(3);
         let victim = win.selected_entry().unwrap();
         assert!(victim.is_image());
         assert_eq!(press(&win, gdk::Key::Delete), Propagation::Stop);
-        assert_eq!(texts(&win).len(), 2);
+        assert_eq!(texts(&win).len(), 3);
         wait_until("storage delete", || {
-            store.lock().unwrap().entries().len() == 2
+            store.lock().unwrap().entries().len() == 3
         });
 
         // `?` shows the shortcuts dialog; list keys are ignored while open.

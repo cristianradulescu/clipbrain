@@ -31,8 +31,16 @@ impl HistoryWindow {
         window
     }
 
-    /// Re-reads the history from storage (off-thread) and refreshes the list.
+    /// Re-reads the history from storage (off-thread) and refreshes the
+    /// list. The selection follows its entry: `SingleSelection` keeps the
+    /// selected item when a splice removes and re-adds it.
     pub fn reload(&self) {
+        self.load(None);
+    }
+
+    /// Like [`reload`](Self::reload), but afterwards selects and scrolls to
+    /// the entry with `select_id` if given.
+    fn load(&self, select_id: Option<String>) {
         let Some(store) = self.imp().store.get().cloned() else {
             return;
         };
@@ -42,7 +50,12 @@ impl HistoryWindow {
             self,
             async move {
                 match with_store(&store, |s| Ok(s.entries().to_vec())).await {
-                    Ok(entries) if win.imp().change_seq.get() == seq => win.set_entries(&entries),
+                    Ok(entries) if win.imp().change_seq.get() == seq => {
+                        win.set_entries(&entries);
+                        if let Some(id) = select_id {
+                            win.select_entry(&id);
+                        }
+                    }
                     Ok(_) => log::debug!("dropping superseded reload"),
                     Err(e) => log::warn!("could not reload history: {e:#}"),
                 }
@@ -188,7 +201,9 @@ impl HistoryWindow {
                 // promote the entry explicitly.
                 let id = entry.id();
                 match with_store(&store, move |s| s.promote(&id)).await {
-                    Ok(_) => win.reload(),
+                    // Select it at its new place at the top; a row's Copy
+                    // button doesn't select the row by itself.
+                    Ok(_) => win.load(Some(entry.id())),
                     Err(e) => log::warn!("could not move entry to the top: {e:#}"),
                 }
             }
@@ -338,6 +353,25 @@ impl HistoryWindow {
 
     fn selected_entry(&self) -> Option<ClipEntry> {
         self.selection().selected_item().and_downcast::<ClipEntry>()
+    }
+
+    /// Selects the visible entry with `id` and scrolls to it.
+    fn select_entry(&self, id: &str) {
+        let selection = self.selection();
+        let pos = selection
+            .iter::<glib::Object>()
+            .filter_map(Result::ok)
+            .position(|item| {
+                item.downcast_ref::<ClipEntry>()
+                    .is_some_and(|entry| entry.id() == id)
+            });
+        let Some(pos) = pos.and_then(|p| u32::try_from(p).ok()) else {
+            return;
+        };
+        selection.set_selected(pos);
+        self.imp()
+            .list_view
+            .scroll_to(pos, gtk::ListScrollFlags::NONE, None);
     }
 
     fn move_selection(&self, delta: i32) {
