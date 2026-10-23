@@ -46,7 +46,7 @@ The monitor keeps `last_hash` to suppress the spurious `changed` signals GNOME f
 Clipboard changes made by clipbrain itself (`is_local()`) are ignored; copying an entry promotes it in storage explicitly.
 
 ### Password-manager secrets
-Content offering `x-kde-passwordManagerHint` = `secret` (KeePassXC/Klipper convention) or `application/x-nspasteboard-concealed-type` is never read or stored, on both the `changed` and the poll paths. A hint that can't be read counts as secret.
+Content offering `x-kde-passwordManagerHint` = `secret` (KeePassXC/Klipper convention) or `application/x-nspasteboard-concealed-type` is never read or stored, on both the `changed` and the poll paths. A hint that can't be read counts as secret. The check is repeated after each read (formats unchanged, still not secret), so content that turns secret mid-read is dropped.
 
 ### Window lifecycle
 `HistoryWindow` is created once and hidden/shown, never re-created. `show_window()` always calls `reload()` before `present()` to pick up entries captured while hidden. Captures only trigger `reload()` while the window is visible.

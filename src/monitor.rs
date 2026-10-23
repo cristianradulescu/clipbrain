@@ -16,7 +16,9 @@
 //! also offer `text/plain`. Hashing and PNG encoding run off the main thread.
 //!
 //! Content that a password manager marks as secret is never read or stored
-//! (see [`SECRET_HINT_MIME`] and [`CONCEALED_MIME`]).
+//! (see [`SECRET_HINT_MIME`] and [`CONCEALED_MIME`]). The check runs before
+//! every read and again after it, so content that turned secret mid-read
+//! is dropped.
 
 use std::cell::{Cell, RefCell};
 use std::future::Future;
@@ -297,15 +299,32 @@ impl<S: ClipboardSource> Inner<S> {
         secret
     }
 
+    /// Re-checks after a read: the clipboard must still offer `planned`, the
+    /// formats the read was planned from (otherwise the content may have
+    /// changed mid-read), and must still not be marked secret.
+    async fn still_safe(&self, planned: &[String]) -> bool {
+        let current = self.source.mime_types();
+        if current != planned {
+            log::debug!("clipboard formats changed during a read; dropping it");
+            return false;
+        }
+        !self.is_secret(&current).await
+    }
+
     async fn read_changed(&self, mimes: &[String], generation: u64) {
         let Some(mime) = find_mime(mimes, &IMAGE_MIMES) else {
-            if let Some(text) = self.source.read_text().await {
+            if let Some(text) = self.source.read_text().await
+                && self.still_safe(mimes).await
+            {
                 self.deliver_text(text, generation).await;
             }
             return;
         };
         match self.source.read_texture().await {
             Some(texture) => {
+                if !self.still_safe(mimes).await {
+                    return;
+                }
                 let encoded = off_thread(move || {
                     let png = texture.save_to_png_bytes();
                     let hash = sha256_hex(&png);
@@ -317,7 +336,9 @@ impl<S: ClipboardSource> Inner<S> {
             }
             None => {
                 // Fall back to the raw stream when GDK can't hand us a texture.
-                if let Some(raw) = self.source.read_mime(mime).await {
+                if let Some(raw) = self.source.read_mime(mime).await
+                    && self.still_safe(mimes).await
+                {
                     self.decode_and_deliver(raw, generation).await;
                 }
             }
@@ -356,7 +377,8 @@ impl<S: ClipboardSource> Inner<S> {
         let this = Rc::clone(self);
         let handle = glib::spawn_future_local(async move {
             if !this.is_secret(&mimes).await {
-                this.read_polled(image_mime, has_text, generation).await;
+                this.read_polled(&mimes, image_mime, has_text, generation)
+                    .await;
             }
             let mut task = this.poll_task.borrow_mut();
             if task.as_ref().is_some_and(|t| t.seq == seq) {
@@ -370,10 +392,19 @@ impl<S: ClipboardSource> Inner<S> {
         }));
     }
 
-    async fn read_polled(&self, image_mime: Option<&'static str>, has_text: bool, generation: u64) {
+    async fn read_polled(
+        &self,
+        mimes: &[String],
+        image_mime: Option<&'static str>,
+        has_text: bool,
+        generation: u64,
+    ) {
         if let Some(mime) = image_mime {
             let raw = self.source.read_mime(mime).await.filter(|b| !b.is_empty());
             if let Some(raw) = raw {
+                if !self.still_safe(mimes).await {
+                    return;
+                }
                 let Some((raw, raw_hash)) = off_thread(move || {
                     let hash = sha256_hex(&raw);
                     (raw, hash)
@@ -400,7 +431,9 @@ impl<S: ClipboardSource> Inner<S> {
                 return;
             }
         }
-        if let Some(text) = self.source.read_text().await {
+        if let Some(text) = self.source.read_text().await
+            && self.still_safe(mimes).await
+        {
             self.deliver_text(text, generation).await;
         }
     }
@@ -466,7 +499,8 @@ mod tests {
     use super::*;
 
     /// Scripted clipboard. Reads resolve immediately unless `gate` is set,
-    /// in which case they wait for a message on it.
+    /// in which case they wait for a message on it and then return whatever
+    /// the clipboard holds at that point.
     #[derive(Default)]
     struct Fake {
         mimes: Vec<String>,
@@ -522,17 +556,21 @@ mod tests {
             self.0.borrow().reads
         }
 
-        fn read<T: 'static>(&self, value: Option<T>) -> LocalBoxFuture<Option<T>> {
+        fn read<T: 'static>(
+            &self,
+            value: impl FnOnce(&Fake) -> Option<T> + 'static,
+        ) -> LocalBoxFuture<Option<T>> {
             let gate = {
                 let mut f = self.0.borrow_mut();
                 f.reads += 1;
                 f.gate.clone()
             };
+            let fake = Rc::clone(&self.0);
             Box::pin(async move {
                 if let Some(gate) = gate {
                     gate.recv().await.ok()?;
                 }
-                value
+                value(&fake.borrow())
             })
         }
     }
@@ -547,22 +585,17 @@ mod tests {
             self.0.borrow().local
         }
         fn read_text(&self) -> LocalBoxFuture<Option<String>> {
-            let value = self.0.borrow().text.clone();
-            self.read(value)
+            self.read(|f| f.text.clone())
         }
         fn read_texture(&self) -> LocalBoxFuture<Option<gdk::Texture>> {
-            let value = self.0.borrow().texture.clone();
-            self.read(value)
+            self.read(|f| f.texture.clone())
         }
         fn read_mime(&self, mime: &str) -> LocalBoxFuture<Option<glib::Bytes>> {
-            let value = {
-                let f = self.0.borrow();
-                match f.extra.iter().find(|(m, _)| m == mime) {
-                    Some((_, bytes)) => Some(bytes.clone()),
-                    None => f.raw.clone(),
-                }
-            };
-            self.read(value)
+            let mime = mime.to_owned();
+            self.read(move |f| match f.extra.iter().find(|(m, _)| *m == mime) {
+                Some((_, bytes)) => Some(bytes.clone()),
+                None => f.raw.clone(),
+            })
         }
         fn connect_changed(&self, f: Box<dyn Fn()>) {
             self.0.borrow_mut().changed = Some(Rc::from(f));
@@ -860,6 +893,47 @@ mod tests {
             h.source.offer(SECRET_HINT_MIME, b"secret");
             h.source.emit_changed();
             h.poll();
+            assert_eq!(h.drain().await, []);
+        });
+    }
+
+    #[test]
+    fn content_that_turns_secret_mid_read_is_dropped() {
+        run(async || {
+            let h = Harness::new(None);
+            let (open, gate) = async_channel::unbounded();
+            h.source.0.borrow_mut().gate = Some(gate);
+            h.source.set_text("public");
+            h.poll(); // checks the formats, then blocks reading the text
+            glib::timeout_future(Duration::from_millis(10)).await;
+            // A password manager takes over the clipboard before the read
+            // completes, and the coalesced `changed` signal never arrives.
+            h.source.set_text("hunter2");
+            h.source.offer(SECRET_HINT_MIME, b"secret");
+            for _ in 0..3 {
+                open.send_blocking(()).unwrap();
+            }
+            assert_eq!(h.drain().await, []);
+        });
+    }
+
+    #[test]
+    fn secret_hint_set_mid_read_with_same_formats_is_caught() {
+        run(async || {
+            let h = Harness::new(None);
+            let (open, gate) = async_channel::unbounded();
+            h.source.0.borrow_mut().gate = Some(gate);
+            h.source.set_text("public");
+            h.source.offer(SECRET_HINT_MIME, b"none");
+            h.source.emit_changed(); // reads the hint, then the text
+            open.send_blocking(()).unwrap();
+            glib::timeout_future(Duration::from_millis(10)).await;
+            // Same formats, but the new owner marks its content secret.
+            h.source.set_text("hunter2");
+            h.source.offer(SECRET_HINT_MIME, b"secret");
+            for _ in 0..3 {
+                open.send_blocking(()).unwrap();
+            }
             assert_eq!(h.drain().await, []);
         });
     }
