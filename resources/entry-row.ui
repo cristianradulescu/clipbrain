@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<interface>
+  <requires lib="gtk" version="4.0"/>
+  <template class="ClipbrainEntryRow" parent="GtkBox">
+    <property name="orientation">vertical</property>
+    <child>
+      <object class="GtkBox">
+        <property name="spacing">8</property>
+        <property name="margin-top">8</property>
+        <property name="margin-bottom">8</property>
+        <property name="margin-start">12</property>
+        <property name="margin-end">8</property>
+        <child>
+          <object class="GtkImage" id="thumbnail">
+            <property name="pixel-size">48</property>
+            <property name="width-request">48</property>
+            <property name="height-request">48</property>
+          </object>
+        </child>
+        <child>
+          <object class="GtkLabel" id="label">
+            <property name="hexpand">true</property>
+            <property name="halign">start</property>
+            <property name="valign">center</property>
+            <property name="ellipsize">end</property>
+            <property name="max-width-chars">50</property>
+            <property name="wrap">false</property>
+          </object>
+        </child>
+        <child>
+          <object class="GtkButton" id="copy_button">
+            <property name="label">Copy</property>
+            <property name="valign">center</property>
+            <property name="action-name">win.copy-entry</property>
+            <style>
+              <class name="pill"/>
+            </style>
+          </object>
+        </child>
+        <child>
+          <object class="GtkButton" id="delete_button">
+            <property name="icon-name">edit-delete-symbolic</property>
+            <property name="valign">center</property>
+            <property name="tooltip-text">Delete</property>
+            <property name="action-name">win.delete-entry</property>
+            <style>
+              <class name="destructive-action"/>
+              <class name="flat"/>
+            </style>
+          </object>
+        </child>
+      </object>
+    </child>
+    <child>
+      <object class="GtkSeparator"/>
+    </child>
+  </template>
+</interface>

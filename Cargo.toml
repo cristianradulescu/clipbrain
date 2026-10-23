@@ -23,3 +23,6 @@ uuid = { version = "1", features = ["v4"] }
 [dev-dependencies]
 async-channel = "2"
 tempfile = "3"
+
+[build-dependencies]
+glib-build-tools = "0.22"

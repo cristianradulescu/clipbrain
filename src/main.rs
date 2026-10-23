@@ -1,12 +1,12 @@
 //! Clipbrain: a clipboard history manager for GNOME.
 
 mod app;
+mod entry;
 mod monitor;
-// Delete, promote and clear are wired to the window in phase 3.
-#[allow(dead_code)]
 mod storage;
+mod window;
 
-use gtk::{glib, prelude::*};
+use gtk::{gio, glib, prelude::*};
 
 fn main() -> glib::ExitCode {
     // Run through XWayland. On native Wayland, mutter only sends clipboard
@@ -18,6 +18,8 @@ fn main() -> glib::ExitCode {
         unsafe { std::env::set_var("GDK_BACKEND", "x11") };
     }
     env_logger::Builder::from_env(env_logger::Env::new().filter_or("CLIPBRAIN_LOG", "warn")).init();
+
+    gio::resources_register_include!("clipbrain.gresource").expect("bundled resources are valid");
 
     app::ClipbrainApp::new().run()
 }

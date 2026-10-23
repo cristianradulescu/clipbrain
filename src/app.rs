@@ -1,12 +1,15 @@
-//! The application object: owns the history store and clipboard monitor.
+//! The application object: wires the history store, clipboard monitor and
+//! window together.
 
 use std::sync::{Arc, Mutex, PoisonError};
 
 use adw::subclass::prelude::*;
+use anyhow::anyhow;
 use gtk::{gdk, gio, glib, prelude::*};
 
 use crate::monitor::{Capture, GdkClipboardSource, Monitor};
-use crate::storage::Store;
+use crate::storage::{StorageError, Store};
+use crate::window::HistoryWindow;
 
 /// Unique application id, shared with the Python version so a second
 /// launch activates whichever instance is running.
@@ -15,6 +18,23 @@ pub const APP_ID: &str = "app.clipbrain";
 /// The history store, shared with blocking worker threads.
 pub type SharedStore = Arc<Mutex<Store>>;
 
+/// Runs `f` against the store on GIO's blocking thread pool, keeping file
+/// I/O off the main thread.
+pub async fn with_store<T, F>(store: &SharedStore, f: F) -> anyhow::Result<T>
+where
+    T: Send + 'static,
+    F: FnOnce(&mut Store) -> Result<T, StorageError> + Send + 'static,
+{
+    let store = Arc::clone(store);
+    let result = gio::spawn_blocking(move || {
+        let mut store = store.lock().unwrap_or_else(PoisonError::into_inner);
+        f(&mut store)
+    })
+    .await
+    .map_err(|_| anyhow!("storage worker panicked"))?;
+    Ok(result?)
+}
+
 mod imp {
     use std::cell::{Cell, OnceCell, RefCell};
 
@@ -22,11 +42,12 @@ mod imp {
 
     #[derive(Default)]
     pub struct ClipbrainApp {
-        /// Keeps the app alive while no window is shown.
+        /// Keeps the app alive while the window is hidden.
         pub hold: RefCell<Option<gio::ApplicationHoldGuard>>,
         pub started: Cell<bool>,
         pub store: OnceCell<SharedStore>,
         pub monitor: OnceCell<Monitor<GdkClipboardSource>>,
+        pub window: OnceCell<HistoryWindow>,
     }
 
     #[glib::object_subclass]
@@ -41,7 +62,9 @@ mod imp {
     impl ApplicationImpl for ClipbrainApp {
         fn startup(&self) {
             self.parent_startup();
-            self.hold.replace(Some(self.obj().hold()));
+            let app = self.obj();
+            self.hold.replace(Some(app.hold()));
+            app.setup_actions();
         }
 
         fn activate(&self) {
@@ -69,8 +92,22 @@ impl ClipbrainApp {
             .build()
     }
 
+    fn setup_actions(&self) {
+        let show = gio::ActionEntry::builder("show-window")
+            .activate(|app: &Self, _, _| app.show_window())
+            .build();
+        self.add_action_entries([show]);
+
+        self.set_accels_for_action("app.show-window", &["<Control><Shift>v"]);
+        self.set_accels_for_action("win.toggle-search", &["<Control>f"]);
+        self.set_accels_for_action("win.show-help", &["F1"]);
+        self.set_accels_for_action("win.clear-history", &["<Control><Shift>Delete"]);
+    }
+
     fn on_activate(&self) {
         if self.imp().started.replace(true) {
+            // Already running (e.g. a second `clipbrain` launch): show it.
+            self.show_window();
             return;
         }
         glib::spawn_future_local(glib::clone!(
@@ -80,7 +117,7 @@ impl ClipbrainApp {
         ));
     }
 
-    /// Opens the store off-thread, then starts watching the clipboard.
+    /// Opens the store off-thread, then starts the monitor and window.
     async fn start(&self) {
         let store = match gio::spawn_blocking(Store::open_default).await {
             Ok(Ok(store)) => store,
@@ -90,7 +127,8 @@ impl ClipbrainApp {
         log::info!("loaded {} history entries", store.entries().len());
         let seed = store.seed_hash();
         let store = Arc::new(Mutex::new(store));
-        let _ = self.imp().store.set(Arc::clone(&store));
+        let imp = self.imp();
+        let _ = imp.store.set(Arc::clone(&store));
 
         let Some(display) = gdk::Display::default() else {
             return self.fail("no display available");
@@ -106,29 +144,54 @@ impl ClipbrainApp {
             },
         );
         monitor.start();
-        let _ = self.imp().monitor.set(monitor);
+        let _ = imp.monitor.set(monitor);
+
+        let window = HistoryWindow::new(store);
+        window.set_application(Some(self));
+        let app = self.downgrade();
+        window.connect_history_cleared(move || {
+            if let Some(app) = app.upgrade()
+                && let Some(monitor) = app.imp().monitor.get()
+            {
+                monitor.reset_last_hash();
+            }
+        });
+        let _ = imp.window.set(window);
+        self.show_window();
     }
 
-    /// Stores a capture on a worker thread.
+    /// Reloads and presents the history window.
+    fn show_window(&self) {
+        if let Some(window) = self.imp().window.get() {
+            window.reload();
+            window.set_visible(true);
+            window.present();
+        }
+    }
+
+    /// Stores a capture off-thread; refreshes the window if it's showing.
     fn save_capture(&self, capture: Capture) {
         let Some(store) = self.imp().store.get().cloned() else {
             return;
         };
-        glib::spawn_future_local(async move {
-            let result = gio::spawn_blocking(move || {
-                let mut store = store.lock().unwrap_or_else(PoisonError::into_inner);
-                match capture {
-                    Capture::Text(text) => store.add_text(&text),
-                    Capture::Image(png) => store.add_image(&png),
+        glib::spawn_future_local(glib::clone!(
+            #[weak(rename_to = app)]
+            self,
+            async move {
+                let result = with_store(&store, move |s| match capture {
+                    Capture::Text(text) => s.add_text(&text),
+                    Capture::Image(png) => s.add_image(&png),
+                })
+                .await;
+                match result {
+                    Ok(entry) => log::info!("stored {:?} entry {}", entry.kind, entry.id),
+                    Err(e) => return log::warn!("failed to store clipboard entry: {e:#}"),
                 }
-            })
-            .await;
-            match result {
-                Ok(Ok(entry)) => log::info!("stored {:?} entry {}", entry.kind, entry.id),
-                Ok(Err(e)) => log::warn!("failed to store clipboard entry: {e}"),
-                Err(_) => log::error!("storage worker panicked"),
+                if let Some(window) = app.imp().window.get().filter(|w| w.is_visible()) {
+                    window.reload();
+                }
             }
-        });
+        ));
     }
 
     fn fail(&self, message: &str) {
