@@ -116,7 +116,7 @@ impl ClipEntry {
         thumbnail
     }
 
-    /// Whether this entry matches a search query, like the Python filter:
+    /// Whether this entry matches a search query, as in the original version:
     /// case-insensitive substring on text; images match substrings of
     /// "image".
     pub fn matches(&self, query: &str) -> bool {

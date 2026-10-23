@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <!-- An earlier clipping peeking out behind the board: the history. -->
+  <rect x="32" y="22" width="78" height="100" rx="10" fill="#99c1f1"/>
+  <!-- Clipboard. -->
+  <rect x="18" y="14" width="82" height="104" rx="10" fill="#1c71d8"/>
+  <rect x="25" y="24" width="68" height="87" rx="6" fill="#f6f5f4"/>
+  <rect x="41" y="6" width="36" height="20" rx="6" fill="#5e5c64"/>
+  <rect x="49" y="11" width="20" height="7" rx="3" fill="#c0bfbc"/>
+  <!-- Clipped text. -->
+  <rect x="35" y="42" width="48" height="6" rx="3" fill="#9a9996"/>
+  <rect x="35" y="56" width="38" height="6" rx="3" fill="#9a9996"/>
+  <rect x="35" y="70" width="44" height="6" rx="3" fill="#9a9996"/>
+  <rect x="35" y="84" width="26" height="6" rx="3" fill="#9a9996"/>
+</svg>

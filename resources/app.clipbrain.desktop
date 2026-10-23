@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Clipbrain
+Comment=Clipboard history manager
+Exec=clipbrain
+Icon=app.clipbrain
+Terminal=false
+Categories=GTK;Utility;
+Keywords=clipboard;history;paste;
+StartupNotify=true
+StartupWMClass=clipbrain

@@ -1,10 +1,14 @@
 #!/bin/bash
 # clipbrain installer
 # Usage: ./install.sh
-set -e
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+APP_ID="app.clipbrain"
 LAUNCHER="$HOME/.local/bin/clipbrain"
+DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
+DESKTOP_FILE="$DATA_HOME/applications/$APP_ID.desktop"
+ICON_DIR="$DATA_HOME/icons/hicolor"
 KEYBINDING_PATH="/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/clipbrain/"
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -32,84 +36,77 @@ require_apt() {
     green "  System packages installed."
 }
 
-# ── 1. Detect distro ─────────────────────────────────────────────────────────
+# ── 1. Build dependencies ────────────────────────────────────────────────────
 
 step "Checking system dependencies"
 
+BUILD_DEPS=(libgtk-4-dev libadwaita-1-dev pkg-config build-essential)
+
 if ! command -v apt-get &>/dev/null; then
     red "This installer supports Debian/Ubuntu-based systems (apt)."
-    red "Please install the following packages manually and re-run:"
-    red "  libgirepository-2.0-dev libgtk-4-dev gir1.2-gtk-4.0"
-    red "  libgtk-3-dev gir1.2-gtk-3.0"
-    red "  libayatana-appindicator3-1 gir1.2-ayatanaappindicator3-0.1"
-    red "  python3-gi python3-gi-cairo python3-dev"
+    red "Please install the equivalents of these packages manually and re-run:"
+    red "  ${BUILD_DEPS[*]}"
+    red "(GTK >= 4.22 and libadwaita >= 1.9 development files, pkg-config, a C toolchain)"
     exit 1
 fi
 
-require_apt \
-    libgirepository-2.0-dev \
-    libgtk-4-dev \
-    gir1.2-gtk-4.0 \
-    libadwaita-1-dev \
-    gir1.2-adw-1 \
-    libgtk-3-dev \
-    gir1.2-gtk-3.0 \
-    libayatana-appindicator3-1 \
-    gir1.2-ayatanaappindicator3-0.1 \
-    python3-gi \
-    python3-gi-cairo \
-    python3-dev
+require_apt "${BUILD_DEPS[@]}"
 
-# ── 2. Ensure uv is installed ────────────────────────────────────────────────
+# ── 2. Rust toolchain ────────────────────────────────────────────────────────
 
-step "Checking uv"
+step "Checking Rust toolchain"
 
-UV_BIN="$HOME/.local/bin/uv"
-
-if command -v uv &>/dev/null; then
-    UV_BIN="$(command -v uv)"
-    green "  uv found: $UV_BIN ($(uv --version))"
-elif [ -x "$UV_BIN" ]; then
-    green "  uv found: $UV_BIN ($("$UV_BIN" --version))"
-else
-    yellow "  uv not found — installing via official installer..."
-    curl -LsSf https://astral.sh/uv/install.sh | sh
-    if [ ! -x "$UV_BIN" ]; then
-        red "uv installation failed or was placed somewhere unexpected."
-        red "Please install uv manually: https://docs.astral.sh/uv/getting-started/installation/"
-        exit 1
-    fi
-    green "  uv installed: $UV_BIN ($("$UV_BIN" --version))"
-    yellow "  NOTE: Add ~/.local/bin to your PATH if it isn't already:"
-    yellow "    echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.bashrc"
+if ! command -v cargo &>/dev/null && [ -f "$HOME/.cargo/env" ]; then
+    # rustup is installed but not on this shell's PATH yet.
+    # shellcheck source=/dev/null
+    . "$HOME/.cargo/env"
 fi
 
-# ── 3. Install Python environment ────────────────────────────────────────────
+if command -v cargo &>/dev/null; then
+    green "  cargo found: $(command -v cargo) ($(cargo --version))"
+else
+    yellow "  cargo not found — installing rustup (minimal profile)..."
+    if ! command -v curl &>/dev/null; then
+        require_apt curl
+    fi
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+    # shellcheck source=/dev/null
+    . "$HOME/.cargo/env"
+    green "  Rust installed: $(cargo --version)"
+fi
 
-step "Installing Python environment"
+# ── 3. Build ─────────────────────────────────────────────────────────────────
+
+step "Building clipbrain (release)"
 
 cd "$SCRIPT_DIR"
-"$UV_BIN" pip install -e .
-green "  Python environment ready."
+cargo build --release --locked
+green "  Built: $SCRIPT_DIR/target/release/clipbrain"
 
-# ── 4. Install launcher ──────────────────────────────────────────────────────
+# ── 4. Install binary, desktop file and icon ─────────────────────────────────
 
-step "Installing launcher"
+step "Installing"
 
-mkdir -p "$HOME/.local/bin"
-
-cat > "$LAUNCHER" <<EOF
-#!/bin/bash
-cd "$SCRIPT_DIR" && "$UV_BIN" run clipbrain "\$@"
-EOF
-chmod +x "$LAUNCHER"
+install -Dm755 target/release/clipbrain "$LAUNCHER"
 green "  Installed: $LAUNCHER"
+
+install -Dm644 resources/icons/app.clipbrain.svg "$ICON_DIR/scalable/apps/$APP_ID.svg"
+green "  Installed: $ICON_DIR/scalable/apps/$APP_ID.svg"
+
+mkdir -p "$(dirname "$DESKTOP_FILE")"
+sed "s|^Exec=.*|Exec=$LAUNCHER|" resources/app.clipbrain.desktop > "$DESKTOP_FILE"
+chmod 644 "$DESKTOP_FILE"
+green "  Installed: $DESKTOP_FILE"
+
+if command -v update-desktop-database &>/dev/null; then
+    update-desktop-database -q "$(dirname "$DESKTOP_FILE")" || true
+fi
 
 # ── 5. GNOME keyboard shortcut (optional) ────────────────────────────────────
 
 _register_keybinding() {
     local kpath="$1" name="$2" cmd="$3" binding="$4"
-    local EXISTING
+    local EXISTING NEW_LIST
     EXISTING=$(gsettings get org.gnome.settings-daemon.plugins.media-keys custom-keybindings 2>/dev/null || echo "@as []")
     if ! echo "$EXISTING" | grep -q "$kpath"; then
         if [ "$EXISTING" = "@as []" ] || [ "$EXISTING" = "[]" ]; then
@@ -126,7 +123,8 @@ _register_keybinding() {
 }
 
 if ! command -v gsettings &>/dev/null; then
-    yellow "\ngsettings not available — skipping GNOME keyboard shortcuts."
+    echo ""
+    yellow "gsettings not available — skipping GNOME keyboard shortcuts."
 else
     step "GNOME keyboard shortcut to show the history window (optional)"
     echo "  The app binds Ctrl+Shift+V internally."
@@ -134,7 +132,7 @@ else
     echo "    1) <Super>V"
     echo "    2) <Control><Shift>V"
     echo "    3) Skip"
-    read -rp "  Choice [1/2/3]: " choice
+    read -rp "  Choice [1/2/3]: " choice || choice=3
     case "$choice" in
         1) _register_keybinding "$KEYBINDING_PATH" "Clipbrain" "$LAUNCHER" "<Super>v" ;;
         2) _register_keybinding "$KEYBINDING_PATH" "Clipbrain" "$LAUNCHER" "<Control><Shift>v" ;;
@@ -152,20 +150,13 @@ AUTOSTART_FILE="$AUTOSTART_DIR/clipbrain.desktop"
 echo "  Install a .desktop file to start clipbrain on login?"
 echo "    1) Yes"
 echo "    2) No"
-read -rp "  Choice [1/2]: " choice_as
+read -rp "  Choice [1/2]: " choice_as || choice_as=2
 if [ "$choice_as" = "1" ]; then
     mkdir -p "$AUTOSTART_DIR"
-    cat > "$AUTOSTART_FILE" <<EOF
-[Desktop Entry]
-Type=Application
-Name=Clipbrain
-Comment=Clipboard history manager
-Exec=$LAUNCHER
-Icon=edit-paste-symbolic
-Hidden=false
-NoDisplay=false
-X-GNOME-Autostart-enabled=true
-EOF
+    {
+        cat "$DESKTOP_FILE"
+        echo "X-GNOME-Autostart-enabled=true"
+    } > "$AUTOSTART_FILE"
     green "  Autostart installed: $AUTOSTART_FILE"
 else
     yellow "  Skipped."
@@ -175,8 +166,11 @@ fi
 
 printf '\n'
 green "╔══════════════════════════════════════════╗"
-green "║  clipbrain installed successfully!  ║"
+green "║     clipbrain installed successfully!    ║"
 green "╚══════════════════════════════════════════╝"
+echo ""
+echo "  If an older clipbrain is still running, quit it from its tray icon"
+echo "  first; a running instance keeps handling launches until it exits."
 echo ""
 echo "  Start it now:"
 echo "    clipbrain"
@@ -185,4 +179,4 @@ echo "  If 'clipbrain' is not found, add ~/.local/bin to your PATH:"
 echo "    echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.bashrc && source ~/.bashrc"
 echo ""
 echo "  The app runs in the background with a system tray icon."
-echo "  Use the tray icon or Ctrl+Shift+V to show the history window."
+echo "  Use the tray icon or your shortcut to show the history window."

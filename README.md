@@ -1,6 +1,6 @@
 # Clipbrain
 
-A clipboard history manager for GNOME on Wayland, built with Python, GTK4, and libadwaita.
+A clipboard history manager for GNOME on Wayland, built with Rust, GTK4, and libadwaita.
 
 ![Clipbrain screenshot](./screenshot.png "Clipbrain screenshot")
 
@@ -14,9 +14,9 @@ A clipboard history manager for GNOME on Wayland, built with Python, GTK4, and l
 
 ## Requirements
 
-- GNOME on Wayland
-- Python 3.12+
-- Debian/Ubuntu-based system (apt) — the installer handles everything else
+- GNOME on Wayland (the tray icon needs the AppIndicator extension, which Ubuntu enables by default)
+- GTK ≥ 4.22 and libadwaita ≥ 1.9
+- Debian/Ubuntu-based system (apt) — the installer handles everything else, including Rust
 
 ## Installation
 
@@ -27,11 +27,11 @@ cd clipbrain
 ```
 
 `install.sh` will:
-1. Install missing system libraries via `apt`
-2. Install [uv](https://docs.astral.sh/uv/) if not already present
-3. Set up the Python environment (`uv pip install -e .`)
-4. Install `~/.local/bin/clipbrain`
-5. Optionally register a GNOME keyboard shortcut and autostart entry
+1. Install missing build dependencies via `apt` (`libgtk-4-dev`, `libadwaita-1-dev`, `pkg-config`, `build-essential`)
+2. Install Rust via [rustup](https://rustup.rs) if `cargo` isn't available
+3. Build with `cargo build --release`
+4. Install `~/.local/bin/clipbrain`, the desktop file, and the app icon
+5. Optionally register a GNOME keyboard shortcut and an autostart entry
 
 ## Running
 
@@ -42,12 +42,14 @@ clipbrain
 Or without installing:
 
 ```bash
-uv run clipbrain
+cargo run
 ```
+
+Set `CLIPBRAIN_LOG=debug` for verbose logging (it's quiet by default).
 
 ## Usage
 
-Press **Ctrl+Shift+V** or click the tray icon to open the history window. Click any entry to copy it back to the clipboard.
+Press your GNOME shortcut (e.g. **Super+V**) or click the tray icon to open the history window. Press **Enter** or click **Copy** to put an entry back on the clipboard.
 
 ## Keyboard Shortcuts
 
@@ -59,20 +61,28 @@ Press **Ctrl+Shift+V** or click the tray icon to open the history window. Click 
 | `Enter` | Copy selected item to clipboard |
 | `Delete` | Delete selected item |
 | `Ctrl+F` / `/` | Search history |
-| `Escape` | Close search |
+| `Escape` | Close search (or hide the window) |
 | `?` / `F1` | Show keyboard shortcuts |
 | `Ctrl+Shift+Delete` | Clear all history |
+
+While typing in the search box, `j`, `k`, `?` and `Delete` type or edit text as usual.
+
+## Data
+
+History lives in `~/.local/share/clipbrain/` (or `$XDG_DATA_HOME/clipbrain/`): `history.json` plus `images/<id>.png`. The directory is private to your user. The format is the same one the earlier Python version used, so existing history carries over.
 
 ## Architecture
 
 | File | Role |
 |---|---|
-| `clipbrain/main.py` | Entry point |
-| `clipbrain/app.py` | `Adw.Application`; wires monitor, window, tray |
-| `clipbrain/monitor.py` | Clipboard watcher; `changed` signal + 500 ms poll |
-| `clipbrain/storage.py` | JSON index + PNG files in `~/.local/share/clipbrain/` |
-| `clipbrain/window.py` | `Adw.ApplicationWindow`; hides on close, never destroyed |
-| `clipbrain/tray.py` | Separate GTK3 process for `AyatanaAppIndicator3` tray icon |
+| `src/main.rs` | Entry point; selects the X11 backend and registers resources |
+| `src/app.rs` | `AdwApplication` subclass; wires monitor, window, tray |
+| `src/monitor.rs` | Clipboard watcher; `changed` signal + 500 ms poll |
+| `src/storage.rs` | JSON index + PNG files; no GTK, unit-tested |
+| `src/entry.rs` | `ClipEntry` GObject and thumbnail loading |
+| `src/window/` | `AdwApplicationWindow`; hides on close, never destroyed |
+| `src/tray.rs` | In-process StatusNotifierItem tray icon (`ksni`) |
+| `resources/` | UI templates, icon, desktop file |
 | `install.sh` | Full installer |
 
 ## License

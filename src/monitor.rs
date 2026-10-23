@@ -1,4 +1,4 @@
-//! Clipboard watcher: a port of the Python `ClipboardMonitor`.
+//! Clipboard watcher, ported from the original Python `ClipboardMonitor`.
 //!
 //! Two capture paths feed one dedup step:
 //!
