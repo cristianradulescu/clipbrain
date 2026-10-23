@@ -8,6 +8,7 @@ A clipboard history manager for GNOME on Wayland, built with Rust, GTK4, and lib
 
 - **Text and image history** — captures everything you copy, up to 200 entries
 - **Deduplication** — re-copying existing content moves it to the top rather than duplicating it
+- **Password-manager aware** — skips content marked secret (e.g. passwords copied from KeePassXC)
 - **Search** — filter history instantly with Ctrl+F
 - **System tray** — runs in the background; window hides on close
 - **Persistent** — history survives restarts

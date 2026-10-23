@@ -14,6 +14,9 @@
 //!
 //! Images are checked before text, because apps that copy an image often
 //! also offer `text/plain`. Hashing and PNG encoding run off the main thread.
+//!
+//! Content that a password manager marks as secret is never read or stored
+//! (see [`SECRET_HINT_MIME`] and [`CONCEALED_MIME`]).
 
 use std::cell::{Cell, RefCell};
 use std::future::Future;
@@ -34,6 +37,14 @@ const IMAGE_MIMES: [&str; 5] = [
     "image/webp",
 ];
 const TEXT_MIMES: [&str; 2] = ["text/plain;charset=utf-8", "text/plain"];
+
+/// KDE/Klipper convention, used by KeePassXC and other password managers:
+/// this extra type with the value `secret` asks clipboard managers not to
+/// record the content.
+const SECRET_HINT_MIME: &str = "x-kde-passwordManagerHint";
+/// macOS-style marker for concealed (password) content, also offered by some
+/// cross-platform apps. Its presence alone marks the content as secret.
+const CONCEALED_MIME: &str = "application/x-nspasteboard-concealed-type";
 
 /// How often the clipboard is polled.
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
@@ -259,9 +270,31 @@ impl<S: ClipboardSource> Inner<S> {
         let mimes = self.source.mime_types();
         let this = Rc::clone(self);
         let handle = glib::spawn_future_local(async move {
-            this.read_changed(&mimes, generation).await;
+            if !this.is_secret(&mimes).await {
+                this.read_changed(&mimes, generation).await;
+            }
         });
         self.changed_task.replace(Some(handle));
+    }
+
+    /// Whether a password manager marked the current content as secret.
+    /// A hint that can't be read counts as secret, to err on the safe side.
+    async fn is_secret(&self, mimes: &[String]) -> bool {
+        let offered = |wanted: &str| mimes.iter().any(|m| m == wanted);
+        let secret = if offered(CONCEALED_MIME) {
+            true
+        } else if offered(SECRET_HINT_MIME) {
+            self.source
+                .read_mime(SECRET_HINT_MIME)
+                .await
+                .is_none_or(|hint| hint.trim_ascii() == b"secret")
+        } else {
+            false
+        };
+        if secret {
+            log::debug!("skipping clipboard content marked secret by a password manager");
+        }
+        secret
     }
 
     async fn read_changed(&self, mimes: &[String], generation: u64) {
@@ -322,7 +355,9 @@ impl<S: ClipboardSource> Inner<S> {
         self.poll_seq.set(seq);
         let this = Rc::clone(self);
         let handle = glib::spawn_future_local(async move {
-            this.read_polled(image_mime, has_text, generation).await;
+            if !this.is_secret(&mimes).await {
+                this.read_polled(image_mime, has_text, generation).await;
+            }
             let mut task = this.poll_task.borrow_mut();
             if task.as_ref().is_some_and(|t| t.seq == seq) {
                 *task = None;
@@ -438,6 +473,8 @@ mod tests {
         text: Option<String>,
         texture: Option<gdk::Texture>,
         raw: Option<glib::Bytes>,
+        /// Extra MIME types offered alongside the content, with their bytes.
+        extra: Vec<(String, glib::Bytes)>,
         local: bool,
         gate: Option<async_channel::Receiver<()>>,
         reads: u32,
@@ -454,6 +491,7 @@ mod tests {
             f.text = Some(text.into());
             f.texture = None;
             f.raw = None;
+            f.extra.clear();
         }
 
         fn set_image(&self, png: &[u8]) {
@@ -462,6 +500,15 @@ mod tests {
             f.text = None;
             f.raw = Some(glib::Bytes::from(png));
             f.texture = gdk::Texture::from_bytes(&glib::Bytes::from(png)).ok();
+            f.extra.clear();
+        }
+
+        /// Offers an extra MIME type alongside the current content.
+        fn offer(&self, mime: &str, value: &[u8]) {
+            self.0
+                .borrow_mut()
+                .extra
+                .push((mime.into(), glib::Bytes::from(value)));
         }
 
         fn emit_changed(&self) {
@@ -492,7 +539,9 @@ mod tests {
 
     impl ClipboardSource for FakeSource {
         fn mime_types(&self) -> Vec<String> {
-            self.0.borrow().mimes.clone()
+            let f = self.0.borrow();
+            let extra = f.extra.iter().map(|(mime, _)| mime.clone());
+            f.mimes.iter().cloned().chain(extra).collect()
         }
         fn is_local(&self) -> bool {
             self.0.borrow().local
@@ -505,8 +554,14 @@ mod tests {
             let value = self.0.borrow().texture.clone();
             self.read(value)
         }
-        fn read_mime(&self, _mime: &str) -> LocalBoxFuture<Option<glib::Bytes>> {
-            let value = self.0.borrow().raw.clone();
+        fn read_mime(&self, mime: &str) -> LocalBoxFuture<Option<glib::Bytes>> {
+            let value = {
+                let f = self.0.borrow();
+                match f.extra.iter().find(|(m, _)| m == mime) {
+                    Some((_, bytes)) => Some(bytes.clone()),
+                    None => f.raw.clone(),
+                }
+            };
             self.read(value)
         }
         fn connect_changed(&self, f: Box<dyn Fn()>) {
@@ -745,6 +800,67 @@ mod tests {
             }
             h.poll();
             assert_eq!(h.drain().await, [text("actually text")]);
+        });
+    }
+
+    #[test]
+    fn password_manager_secrets_are_not_captured() {
+        run(async || {
+            let h = Harness::new(None);
+            h.source.set_text("hunter2");
+            h.source.offer(SECRET_HINT_MIME, b"secret");
+            h.source.emit_changed();
+            h.poll();
+            assert_eq!(h.drain().await, []);
+            // Only the hint was read, never the password itself.
+            assert_eq!(h.source.reads(), 2);
+
+            // The next normal copy is captured as usual.
+            h.source.set_text("not a password");
+            h.poll();
+            assert_eq!(h.drain().await, [text("not a password")]);
+        });
+    }
+
+    #[test]
+    fn secret_hint_value_is_checked() {
+        run(async || {
+            let h = Harness::new(None);
+            h.source.set_text("public");
+            h.source.offer(SECRET_HINT_MIME, b"something-else");
+            h.source.emit_changed();
+            assert_eq!(h.drain().await, [text("public")]);
+
+            // Surrounding whitespace in the hint is tolerated.
+            h.source.set_text("private");
+            h.source.offer(SECRET_HINT_MIME, b"secret\n");
+            h.poll();
+            assert_eq!(h.drain().await, []);
+        });
+    }
+
+    #[test]
+    fn concealed_type_marks_content_secret() {
+        run(async || {
+            let h = Harness::new(None);
+            h.source.set_text("hunter2");
+            h.source.offer(CONCEALED_MIME, b"");
+            h.source.emit_changed();
+            h.poll();
+            assert_eq!(h.drain().await, []);
+            assert_eq!(h.source.reads(), 0);
+        });
+    }
+
+    #[test]
+    fn secret_images_are_not_captured() {
+        run(async || {
+            let h = Harness::new(None);
+            h.source.set_image(&sample_png([9, 9, 9, 255]));
+            h.source.offer(SECRET_HINT_MIME, b"secret");
+            h.source.emit_changed();
+            h.poll();
+            assert_eq!(h.drain().await, []);
         });
     }
 
