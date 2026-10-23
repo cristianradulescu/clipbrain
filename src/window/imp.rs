@@ -5,6 +5,7 @@ use adw::subclass::prelude::*;
 use gtk::glib::subclass::Signal;
 use gtk::{gio, glib, prelude::*};
 
+use super::preview::{self, PreviewWindow};
 use crate::app::SharedStore;
 use crate::entry::ClipEntry;
 
@@ -32,6 +33,10 @@ pub struct HistoryWindow {
     /// Bumped by every reload and local edit; an async reload only applies
     /// its snapshot if no newer change happened while it was loading.
     pub change_seq: Cell<u64>,
+    /// The open preview window, if any.
+    pub preview: glib::WeakRef<PreviewWindow>,
+    /// Size for the next preview: the last one's final size.
+    pub preview_size: Cell<(i32, i32)>,
 }
 
 impl Default for HistoryWindow {
@@ -53,6 +58,8 @@ impl Default for HistoryWindow {
             selection,
             store: OnceCell::new(),
             change_seq: Cell::new(0),
+            preview: glib::WeakRef::new(),
+            preview_size: Cell::new(preview::DEFAULT_SIZE),
         }
     }
 }

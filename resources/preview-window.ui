@@ -2,10 +2,10 @@
 <interface>
   <requires lib="gtk" version="4.0"/>
   <requires lib="Adw" version="1.6"/>
-  <template class="ClipbrainPreviewDialog" parent="AdwDialog">
-    <property name="content-width">700</property>
-    <property name="content-height">500</property>
-    <property name="child">
+  <template class="ClipbrainPreviewWindow" parent="AdwWindow">
+    <property name="title">Preview</property>
+    <property name="modal">true</property>
+    <property name="content">
       <object class="AdwToolbarView">
         <child type="top">
           <object class="AdwHeaderBar">
@@ -16,7 +16,6 @@
               <object class="GtkButton" id="copy_button">
                 <property name="icon-name">edit-copy-symbolic</property>
                 <property name="tooltip-text">Copy (Enter)</property>
-                <property name="action-name">win.copy-entry</property>
                 <accessibility>
                   <property name="label">Copy</property>
                 </accessibility>

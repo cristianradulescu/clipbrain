@@ -60,7 +60,7 @@ Press your GNOME shortcut (e.g. **Super+V**) or click the tray icon to open the 
 | `↓` / `j` | Select next item |
 | `↑` / `k` | Select previous item |
 | `Enter` | Copy selected item to clipboard |
-| `Space` | Preview selected item in full (`j`/`k` step through entries, `Enter` copies, `Space`/`Escape` close) |
+| `Space` | Preview selected item in full (`j`/`k` step through entries, `+`/`-` resize by 10%, `Enter` copies, `Space`/`Escape` close) |
 | `Delete` | Delete selected item |
 | `Ctrl+F` / `/` | Search history |
 | `Escape` | Close search (or hide the window) |

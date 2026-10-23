@@ -29,7 +29,7 @@ One process: GTK on the main thread, tray on ksni's thread, file I/O and hashing
 | `src/storage.rs` | `Store`: JSON index + PNGs, atomic writes, dedup, 200 cap; no GTK; unit-tested |
 | `src/monitor.rs` | `ClipboardSource` trait + `GdkClipboardSource`; `Monitor` (`changed` signal + 500 ms poll) |
 | `src/entry.rs` | `ClipEntry` GObject; off-thread 48 px thumbnails |
-| `src/window/` | `HistoryWindow`, `EntryRow`, Space-opened `PreviewDialog` (templates in `resources/*.ui`); hides on close |
+| `src/window/` | `HistoryWindow`, `EntryRow`, Space-opened `PreviewWindow` (templates in `resources/*.ui`); hides on close |
 | `src/tray.rs` | `ksni` StatusNotifierItem; events → `async_channel` → main loop |
 | `resources/` | `.ui` templates, icon, `.desktop`; compiled by `build.rs` |
 
@@ -51,7 +51,7 @@ Content offering `x-kde-passwordManagerHint` = `secret` (KeePassXC/Klipper conve
 ### Window lifecycle
 `HistoryWindow` is created once and hidden/shown, never re-created. `show_window()` always calls `reload()` before `present()` to pick up entries captured while hidden. Captures only trigger `reload()` while the window is visible.
 
-The capture-phase key handler ignores list keys while a dialog is open, except for the Space preview (`window/preview.rs`), where it handles Space, Enter and j/k. It passes `j`/`k`/`?`/Space/`Delete` through while the search entry is focused.
+The capture-phase key handler ignores list keys while a dialog is open. The Space preview is a separate modal `AdwWindow` (an `AdwDialog` can't outgrow the 480 px history window). Its keys (Space/Escape, Enter, j/k, `+`/`-` to resize by 10%) go to `HistoryWindow::handle_preview_key`, and its last size is reused. It passes `j`/`k`/`?`/Space/`Delete` through while the search entry is focused.
 
 ## Storage
 - `~/.local/share/clipbrain/history.json`: JSON array, newest first, max 200 entries, 2-space indent, Python-`isoformat()` UTC timestamps

@@ -14,7 +14,7 @@ use gtk::{gdk, gio, glib};
 use crate::app::{SharedStore, with_store};
 use crate::entry::{ClipEntry, load_texture};
 use crate::storage::Entry;
-use preview::PreviewDialog;
+use preview::PreviewWindow;
 use row::EntryRow;
 
 glib::wrapper! {
@@ -313,15 +313,8 @@ impl HistoryWindow {
                 | gdk::ModifierType::ALT_MASK
                 | gdk::ModifierType::SUPER_MASK,
         );
-        if let Some(dialog) = self.visible_dialog() {
-            // The preview takes a few keys; other dialogs (clear
-            // confirmation, shortcuts) handle their own.
-            return match dialog.downcast::<PreviewDialog>() {
-                Ok(preview) if !modified => self.handle_preview_key(&preview, key),
-                _ => Proceed,
-            };
-        }
-        if modified {
+        // Let dialogs (clear confirmation, shortcuts) handle their own keys.
+        if modified || self.visible_dialog().is_some() {
             return Proceed;
         }
         let searching = self.imp().search_bar.is_search_mode();
@@ -348,7 +341,7 @@ impl HistoryWindow {
             Key::question if !typing => self.show_help(),
             Key::space if !typing => {
                 if let Some(entry) = self.selected_entry() {
-                    PreviewDialog::new(&entry).present(Some(self));
+                    self.open_preview(&entry);
                 }
             }
             _ => return Proceed,
@@ -356,16 +349,46 @@ impl HistoryWindow {
         Stop
     }
 
-    /// Keys while the preview is open. Escape closes it (AdwDialog's own
-    /// binding); arrows and Page Up/Down scroll the text.
-    fn handle_preview_key(&self, preview: &PreviewDialog, key: gdk::Key) -> glib::Propagation {
+    /// Opens the preview of `entry` at the size the last one had.
+    fn open_preview(&self, entry: &ClipEntry) {
+        let preview = PreviewWindow::new(self, entry, self.imp().preview_size.get());
+        preview.connect_close_request(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            #[upgrade_or]
+            glib::Propagation::Proceed,
+            move |preview| {
+                // Remember +/- and mouse resizes for the next preview.
+                win.imp().preview_size.set(preview.default_size());
+                glib::Propagation::Proceed
+            }
+        ));
+        self.imp().preview.set(Some(&preview));
+        preview.present();
+    }
+
+    /// Keys in the preview window. Arrows and Page Up/Down fall through to
+    /// scroll the text.
+    fn handle_preview_key(
+        &self,
+        preview: &PreviewWindow,
+        key: gdk::Key,
+        state: gdk::ModifierType,
+    ) -> glib::Propagation {
         use gdk::Key;
         use glib::Propagation::{Proceed, Stop};
 
+        if state.intersects(
+            gdk::ModifierType::CONTROL_MASK
+                | gdk::ModifierType::ALT_MASK
+                | gdk::ModifierType::SUPER_MASK,
+        ) {
+            return Proceed;
+        }
         match key {
-            Key::space => {
-                preview.close();
-            }
+            Key::space | Key::Escape => preview.close(),
+            Key::plus | Key::equal | Key::KP_Add => preview.resize_by(preview::RESIZE_STEP),
+            Key::minus | Key::KP_Subtract => preview.resize_by(1.0 / preview::RESIZE_STEP),
             Key::Return | Key::KP_Enter => {
                 if let Some(entry) = preview.entry() {
                     self.copy_entry(&entry);

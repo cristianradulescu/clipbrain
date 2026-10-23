@@ -37,6 +37,12 @@
         </child>
         <child>
           <object class="AdwShortcutsItem">
+            <property name="title">Enlarge / shrink preview</property>
+            <property name="accelerator">plus minus</property>
+          </object>
+        </child>
+        <child>
+          <object class="AdwShortcutsItem">
             <property name="title">Delete selected item</property>
             <property name="accelerator">Delete</property>
           </object>
