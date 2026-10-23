@@ -189,6 +189,37 @@ mod ui {
         assert_eq!(win.selected_entry(), Some(browsing));
         assert_eq!(selected(), 2);
 
+        // Space previews the selection; j/k step through entries in place.
+        win.selection().set_selected(0);
+        assert_eq!(press(&win, gdk::Key::space), Propagation::Stop);
+        let preview = win
+            .visible_dialog()
+            .and_downcast::<PreviewDialog>()
+            .expect("preview dialog");
+        assert_eq!(preview.page(), "text");
+        assert_eq!(preview.shown_text(), "new capture");
+        press(&win, gdk::Key::j);
+        press(&win, gdk::Key::j);
+        assert_eq!(selected(), 2);
+        assert_eq!(preview.shown_text(), "Second entry\nwith a second line");
+        press(&win, gdk::Key::j);
+        wait_until("image preview", || preview.page() == "image");
+        press(&win, gdk::Key::k);
+        assert_eq!(preview.page(), "text");
+        // Other keys (arrows, letters) go to the preview's text view.
+        assert_eq!(press(&win, gdk::Key::Down), Propagation::Proceed);
+        assert_eq!(press(&win, gdk::Key::x), Propagation::Proceed);
+        // Enter copies the previewed entry; the preview stays open.
+        assert_eq!(press(&win, gdk::Key::Return), Propagation::Stop);
+        wait_until("preview copy", || top_id() == second.id());
+        wait_until("list reorder after preview copy", || {
+            texts(&win)[0] == second.text()
+        });
+        assert_eq!(win.visible_dialog().as_ref(), Some(preview.upcast_ref()));
+        // Space closes it again.
+        assert_eq!(press(&win, gdk::Key::space), Propagation::Stop);
+        wait_until("preview closed", || win.visible_dialog().is_none());
+
         // Delete removes the selected entry from the list and storage.
         win.selection().set_selected(3);
         let victim = win.selected_entry().unwrap();

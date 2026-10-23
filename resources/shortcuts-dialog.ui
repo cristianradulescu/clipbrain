@@ -31,6 +31,12 @@
         </child>
         <child>
           <object class="AdwShortcutsItem">
+            <property name="title">Preview selected item</property>
+            <property name="accelerator">space</property>
+          </object>
+        </child>
+        <child>
+          <object class="AdwShortcutsItem">
             <property name="title">Delete selected item</property>
             <property name="accelerator">Delete</property>
           </object>

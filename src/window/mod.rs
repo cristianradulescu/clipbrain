@@ -2,6 +2,7 @@
 //! navigation. Created once; closing hides it.
 
 mod imp;
+mod preview;
 mod row;
 
 use std::path::PathBuf;
@@ -13,6 +14,7 @@ use gtk::{gdk, gio, glib};
 use crate::app::{SharedStore, with_store};
 use crate::entry::{ClipEntry, load_texture};
 use crate::storage::Entry;
+use preview::PreviewDialog;
 use row::EntryRow;
 
 glib::wrapper! {
@@ -306,15 +308,19 @@ impl HistoryWindow {
         use gdk::Key;
         use glib::Propagation::{Proceed, Stop};
 
-        // Let dialogs (clear confirmation, shortcuts) handle their own keys.
-        if self.visible_dialog().is_some() {
-            return Proceed;
-        }
         let modified = state.intersects(
             gdk::ModifierType::CONTROL_MASK
                 | gdk::ModifierType::ALT_MASK
                 | gdk::ModifierType::SUPER_MASK,
         );
+        if let Some(dialog) = self.visible_dialog() {
+            // The preview takes a few keys; other dialogs (clear
+            // confirmation, shortcuts) handle their own.
+            return match dialog.downcast::<PreviewDialog>() {
+                Ok(preview) if !modified => self.handle_preview_key(&preview, key),
+                _ => Proceed,
+            };
+        }
         if modified {
             return Proceed;
         }
@@ -340,6 +346,37 @@ impl HistoryWindow {
                 }
             }
             Key::question if !typing => self.show_help(),
+            Key::space if !typing => {
+                if let Some(entry) = self.selected_entry() {
+                    PreviewDialog::new(&entry).present(Some(self));
+                }
+            }
+            _ => return Proceed,
+        }
+        Stop
+    }
+
+    /// Keys while the preview is open. Escape closes it (AdwDialog's own
+    /// binding); arrows and Page Up/Down scroll the text.
+    fn handle_preview_key(&self, preview: &PreviewDialog, key: gdk::Key) -> glib::Propagation {
+        use gdk::Key;
+        use glib::Propagation::{Proceed, Stop};
+
+        match key {
+            Key::space => {
+                preview.close();
+            }
+            Key::Return | Key::KP_Enter => {
+                if let Some(entry) = preview.entry() {
+                    self.copy_entry(&entry);
+                }
+            }
+            Key::j | Key::k => {
+                self.move_selection(if key == Key::j { 1 } else { -1 });
+                if let Some(entry) = self.selected_entry() {
+                    preview.show_entry(&entry);
+                }
+            }
             _ => return Proceed,
         }
         Stop

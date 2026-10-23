@@ -4,6 +4,7 @@
     <file compressed="true">window.ui</file>
     <file compressed="true">entry-row.ui</file>
     <file compressed="true">shortcuts-dialog.ui</file>
+    <file compressed="true">preview-dialog.ui</file>
     <!-- GtkApplication adds <resource base path>/icons to the icon theme. -->
     <file alias="icons/scalable/apps/app.clipbrain.svg" compressed="true">icons/app.clipbrain.svg</file>
   </gresource>
