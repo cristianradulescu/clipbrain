@@ -9,6 +9,7 @@ use gtk::{gdk, gio, glib, prelude::*};
 
 use crate::monitor::{Capture, GdkClipboardSource, Monitor};
 use crate::storage::{StorageError, Store};
+use crate::tray::{self, TrayEvent, TrayHandle};
 use crate::window::HistoryWindow;
 
 /// Unique application id, shared with the Python version so a second
@@ -48,6 +49,7 @@ mod imp {
         pub store: OnceCell<SharedStore>,
         pub monitor: OnceCell<Monitor<GdkClipboardSource>>,
         pub window: OnceCell<HistoryWindow>,
+        pub tray: RefCell<Option<TrayHandle>>,
     }
 
     #[glib::object_subclass]
@@ -70,6 +72,14 @@ mod imp {
         fn activate(&self) {
             self.parent_activate();
             self.obj().on_activate();
+        }
+
+        fn shutdown(&self) {
+            // Ask the tray thread to stop; don't wait for it on the way out.
+            if let Some(tray) = self.tray.take() {
+                drop(tray.shutdown());
+            }
+            self.parent_shutdown();
         }
     }
 
@@ -96,7 +106,10 @@ impl ClipbrainApp {
         let show = gio::ActionEntry::builder("show-window")
             .activate(|app: &Self, _, _| app.show_window())
             .build();
-        self.add_action_entries([show]);
+        let quit = gio::ActionEntry::builder("quit")
+            .activate(|app: &Self, _, _| app.quit_app())
+            .build();
+        self.add_action_entries([show, quit]);
 
         self.set_accels_for_action("app.show-window", &["<Control><Shift>v"]);
         self.set_accels_for_action("win.toggle-search", &["<Control>f"]);
@@ -158,6 +171,61 @@ impl ClipbrainApp {
         });
         let _ = imp.window.set(window);
         self.show_window();
+        self.start_tray();
+    }
+
+    /// Starts the tray icon off-thread and handles its events here.
+    fn start_tray(&self) {
+        let (events, received) = async_channel::unbounded();
+        glib::spawn_future_local(glib::clone!(
+            #[weak(rename_to = app)]
+            self,
+            async move {
+                match gio::spawn_blocking(move || tray::spawn(events)).await {
+                    Ok(Some(handle)) => {
+                        app.imp().tray.replace(Some(handle));
+                    }
+                    // Already logged; the app keeps working without a tray.
+                    Ok(None) => return,
+                    Err(_) => return log::error!("tray startup panicked"),
+                }
+                while let Ok(event) = received.recv().await {
+                    app.on_tray_event(event);
+                }
+            }
+        ));
+    }
+
+    fn on_tray_event(&self, event: TrayEvent) {
+        log::debug!("tray: {event:?}");
+        match event {
+            TrayEvent::Show => self.show_window(),
+            TrayEvent::ClearHistory => {
+                self.show_window();
+                if let Some(window) = self.imp().window.get() {
+                    window.confirm_clear();
+                }
+            }
+            TrayEvent::Quit => self.quit_app(),
+        }
+    }
+
+    /// Stops the tray, releases the hold and quits.
+    fn quit_app(&self) {
+        let tray = self.imp().tray.take();
+        glib::spawn_future_local(glib::clone!(
+            #[weak(rename_to = app)]
+            self,
+            async move {
+                if let Some(tray) = tray {
+                    // Removes the icon before we exit; waiting blocks, so do
+                    // it on a worker thread.
+                    let _ = gio::spawn_blocking(move || tray.shutdown().wait()).await;
+                }
+                app.imp().hold.take();
+                app.quit();
+            }
+        ));
     }
 
     /// Reloads and presents the history window.

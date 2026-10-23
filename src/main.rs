@@ -4,6 +4,7 @@ mod app;
 mod entry;
 mod monitor;
 mod storage;
+mod tray;
 mod window;
 
 use gtk::{gio, glib, prelude::*};

@@ -211,7 +211,8 @@ impl HistoryWindow {
         });
     }
 
-    fn confirm_clear(&self) {
+    /// Asks for confirmation, then clears all history.
+    pub fn confirm_clear(&self) {
         let dialog = adw::AlertDialog::new(
             Some("Clear all history?"),
             Some("All clipboard entries will be permanently deleted."),
