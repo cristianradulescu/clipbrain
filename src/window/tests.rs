@@ -192,7 +192,9 @@ mod ui {
         assert_eq!(press(&win, gdk::Key::j), Propagation::Proceed);
         assert_eq!(selected(), before);
         wait_until("dialog mapped", || dialog.is_mapped());
-        dialog.force_close();
+        // Escape in an AdwDialog runs close(), the path that crashes the
+        // Python app's GtkShortcutsWindow on GTK 4.22.
+        assert!(dialog.close());
         wait_until("dialog closed", || win.visible_dialog().is_none());
 
         // Clear-history asks first; confirming empties list and storage.
