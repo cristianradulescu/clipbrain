@@ -16,6 +16,7 @@
 
 use std::fs;
 use std::io::{self, Write};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
@@ -28,6 +29,8 @@ pub const MAX_ENTRIES: usize = 200;
 
 const INDEX_FILE: &str = "history.json";
 const IMAGES_DIR: &str = "images";
+const PRIVATE_DIR_MODE: u32 = 0o700;
+const PRIVATE_FILE_MODE: u32 = 0o600;
 
 /// Errors returned by [`Store`] operations.
 #[derive(Debug, Error)]
@@ -110,7 +113,11 @@ impl Store {
     pub fn open(dir: &Path) -> Result<Self> {
         let dir = std::path::absolute(dir).map_err(io_err("resolve", dir))?;
         let images_dir = dir.join(IMAGES_DIR);
-        fs::create_dir_all(&images_dir).map_err(io_err("create", &images_dir))?;
+        create_private_dir(&images_dir)?;
+        // Clipboard history routinely holds passwords and tokens, so keep it
+        // owner-only even if an older version created it world-readable.
+        fs::set_permissions(&dir, fs::Permissions::from_mode(PRIVATE_DIR_MODE))
+            .map_err(io_err("chmod", &dir))?;
         let index_file = dir.join(INDEX_FILE);
         let entries = load_index(&index_file)?;
         Ok(Self {
@@ -202,7 +209,7 @@ impl Store {
             }
             _ => {}
         }
-        fs::create_dir_all(&self.images_dir).map_err(io_err("create", &self.images_dir))?;
+        create_private_dir(&self.images_dir)?;
         self.entries.clear();
         self.save()
     }
@@ -300,11 +307,32 @@ fn write_atomic(path: &Path, data: &[u8]) -> Result<()> {
     let mut tmp_name = path.as_os_str().to_owned();
     tmp_name.push(".tmp");
     let tmp = PathBuf::from(tmp_name);
-    let mut file = fs::File::create(&tmp).map_err(io_err("create", &tmp))?;
+    // A leftover temp file from a crash would make `create_new` fail.
+    match fs::remove_file(&tmp) {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(io_err("remove", &tmp)(e)),
+        _ => {}
+    }
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(PRIVATE_FILE_MODE)
+        .open(&tmp)
+        .map_err(io_err("create", &tmp))?;
     file.write_all(data).map_err(io_err("write", &tmp))?;
     file.sync_all().map_err(io_err("sync", &tmp))?;
     drop(file);
     fs::rename(&tmp, path).map_err(io_err("rename", &tmp))
+}
+
+/// Creates `dir` and any missing parents as owner-only (0700).
+fn create_private_dir(dir: &Path) -> Result<()> {
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(PRIVATE_DIR_MODE)
+        .create(dir)
+        .map_err(io_err("create", dir))?;
+    fs::set_permissions(dir, fs::Permissions::from_mode(PRIVATE_DIR_MODE))
+        .map_err(io_err("chmod", dir))
 }
 
 /// Deletes an image entry's file, ignoring errors like the Python version.
@@ -577,6 +605,34 @@ mod tests {
         assert_eq!(backups.len(), 1);
         let backup = fs::read_to_string(dir.path().join(&backups[0])).unwrap();
         assert_eq!(backup, "{ not json");
+    }
+
+    fn mode(path: &Path) -> u32 {
+        fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    #[test]
+    fn data_is_owner_only() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().join("clipbrain");
+        fs::create_dir(&root).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+        let mut store = Store::open(&root).unwrap();
+        let img = store.add_image(&png(1)).unwrap();
+        assert_eq!(mode(&root), 0o700);
+        assert_eq!(mode(&root.join(IMAGES_DIR)), 0o700);
+        assert_eq!(mode(&root.join(INDEX_FILE)), 0o600);
+        assert_eq!(mode(&img.image_path.unwrap()), 0o600);
+        store.clear().unwrap();
+        assert_eq!(mode(&root.join(IMAGES_DIR)), 0o700);
+    }
+
+    #[test]
+    fn stale_temp_file_does_not_block_writes() {
+        let (dir, mut store) = empty_store();
+        fs::write(dir.path().join("history.json.tmp"), b"junk").unwrap();
+        store.add_text("x").unwrap();
+        assert_eq!(Store::open(dir.path()).unwrap().entries().len(), 1);
     }
 
     #[test]
