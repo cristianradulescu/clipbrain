@@ -29,11 +29,15 @@
         </child>
         <child>
           <object class="GtkButton" id="copy_button">
-            <property name="label">Copy</property>
+            <property name="icon-name">edit-copy-symbolic</property>
             <property name="valign">center</property>
+            <property name="tooltip-text">Copy</property>
             <property name="action-name">win.copy-entry</property>
+            <accessibility>
+              <property name="label">Copy</property>
+            </accessibility>
             <style>
-              <class name="pill"/>
+              <class name="flat"/>
             </style>
           </object>
         </child>
@@ -43,6 +47,9 @@
             <property name="valign">center</property>
             <property name="tooltip-text">Delete</property>
             <property name="action-name">win.delete-entry</property>
+            <accessibility>
+              <property name="label">Delete</property>
+            </accessibility>
             <style>
               <class name="destructive-action"/>
               <class name="flat"/>

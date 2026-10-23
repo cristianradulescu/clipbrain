@@ -49,7 +49,7 @@ Set `CLIPBRAIN_LOG=debug` for verbose logging (it's quiet by default).
 
 ## Usage
 
-Press your GNOME shortcut (e.g. **Super+V**) or click the tray icon to open the history window. Press **Enter** or click **Copy** to put an entry back on the clipboard.
+Press your GNOME shortcut (e.g. **Super+V**) or click the tray icon to open the history window. Press **Enter** or click an entry's copy button to put it back on the clipboard.
 
 ## Keyboard Shortcuts
 
